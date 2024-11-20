@@ -1,54 +1,108 @@
-// import Chatwoot from './src/services/chatwoot.js';
+const { Boom } = require('@hapi/boom');
+const NodeCache = require('node-cache');
+const readline = require('readline');
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    makeInMemoryStore,
+    delay
+} = require('@whiskeysockets/baileys');
+const MAIN_LOGGER = require('./path-to-logger'); // Ajusta la ruta según tu estructura
 
-// const chatwoot = new Chatwoot(3);
+const logger = MAIN_LOGGER.child({});
+logger.level = 'trace';
 
+const msgRetryCounterCache = new NodeCache();
 
-// console.log(await chatwoot.contacts.list({
-//     sort: 'name',
-// }));
+const store = useStore ? makeInMemoryStore({ logger }) : undefined;
+if (store) {
+    store.readFromFile('./baileys_store_multi.json');
+    setInterval(() => {
+        store.writeToFile('./baileys_store_multi.json');
+    }, 10000);
+}
 
-// console.log(await chatwoot.contacts.create({
-//     inbox_id: 1,
-//     name: 'Test Contact',
-//     email: 'test@contact.com',
-//     phone_number: '+528951563023',
-//     custom_attributes: {
-//         'custom_attribute_1': 'custom_value_1',
-//         'custom_attribute_2': 'custom_value_2',
-//     }
-// }))
+const startSock = async () => {
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
-// console.log(await chatwoot.conversations.create({
-//     source_id: 'ca852b2e-846f-414b-8168-23f7d39590d7',
-//     inbox_id: 1,
-//     message: {
-//         content: 'Hola este es un mensaje de prueba'
-//     }
-// }));
+    const sock = makeWASocket({
+        version,
+        logger,
+        printQRInTerminal: !usePairingCode,
+        auth: {
+            creds: state.creds,
+            keys: state.keys,
+        },
+        msgRetryCounterCache,
+        generateHighQualityLinkPreview: true,
+        getMessage,
+    });
 
+    store?.bind(sock.ev);
 
-// console.log(await chatwoot.messages.create(2, {
-//     content: 'Hola este es una respuesta enviada desde la api',
-//     message_type: 'outgoing'
-// }));
+    const sendMessageWTyping = async (msg, jid) => {
+        await sock.presenceSubscribe(jid);
+        await delay(500);
 
+        await sock.sendPresenceUpdate('composing', jid);
+        await delay(2000);
 
+        await sock.sendPresenceUpdate('paused', jid);
 
-/* // Obtener el path del directorio raiz para las rutas relativas.
-import { dirname } from "path"; // librería externa
-import { fileURLToPath } from "url";
-console.log(fileURLToPath(import.meta.url));
-const __dirname = dirname(fileURLToPath(import.meta.url));
-console.log(__dirname); */
+        await sock.sendMessage(jid, msg);
+    };
 
-/* import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-console.log(__dirname); */
+    sock.ev.process( async (events) => {
+        
+        if (events['connection.update']) {
+            const update = events['connection.update'];
+            const { connection, lastDisconnect } = update;
+            if (connection === 'close') {
+                if ((lastDisconnect?.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut) {
+                    startSock();
+                } else {
+                    console.log('Connection closed. You are logged out.');
+                }
+            }
+            console.log('connection update', update);
+        }
 
+        if (events['creds.update']) {
+            await saveCreds();
+        }
 
+        if (events['messages.upsert']) {
+            const upsert = events['messages.upsert'];
+            console.log('recv messages ', JSON.stringify(upsert, undefined, 2));
 
-import { createCompletion } from "./src/services/gemini.js";
+            if (upsert.type === 'notify') {
+                for (const msg of upsert.messages) {
+                    if (!msg.key.fromMe && doReplies) {
+                        console.log('replying to', msg.key.remoteJid);
+                        await sock.readMessages([msg.key]);
+                        await sendMessageWTyping({ text: 'Hello there!' }, msg.key.remoteJid);
+                    }
+                }
+            }
+        }
 
-console.log(await createCompletion('Hola'));
+        // Puedes agregar más manejadores de eventos aquí según sea necesario
+    }
+    );
+
+    return sock;
+
+    async function getMessage(key) {
+        if (store) {
+            const msg = await store.loadMessage(key.remoteJid, key.id);
+            return msg?.message || undefined;
+        }
+        return {};
+    }
+};
+
+startSock();

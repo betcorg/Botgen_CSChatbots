@@ -122,6 +122,13 @@
         img.style.display = 'block';
         icon.style.display = 'none';
     });
+
+    socket.on('open', message => {
+        console.log({ message });
+        heading.innerHTML = message;
+        button.style.display = 'none';
+    });
+
 </script>
 
 </html>

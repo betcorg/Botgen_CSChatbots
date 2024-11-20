@@ -30,7 +30,8 @@ export default class Server {
             .use(bodyParser.json())
             .use(cookieParser())
             .use(morgan('dev'))
-            .use("/chatwoot/assets", express.static(process.cwd() + "/qr.ui/assets"));
+            // eslint-disable-next-line no-undef
+            .use('/chatwoot/assets', express.static(process.cwd() + '/qr.ui/assets'));
 
         for (const route of this.routes) {
             this.app.use(route[0], route[1]);
