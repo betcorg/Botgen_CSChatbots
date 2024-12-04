@@ -1,0 +1,12 @@
+.DS_Store
+.vscode
+
+.env
+
+pdfsummary/
+node_modules/
+payloads/
+bot_sessions/
+
+test.js
+node_modules
